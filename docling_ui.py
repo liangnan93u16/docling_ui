@@ -6,14 +6,15 @@ import subprocess
 import platform
 
 def get_default_output_dir():
-    """根据操作系统返回默认输出目录"""
-    system = platform.system().lower()
-    if system == 'windows':
-        return 'C:\\'
-    else:  # Linux 或 MacOS
-        return '/root'
+    """返回项目的tmp目录"""
+    # 获取当前脚本所在目录
+    current_dir = Path(__file__).parent
+    # 创建tmp目录
+    tmp_dir = current_dir / 'tmp'
+    tmp_dir.mkdir(exist_ok=True)
+    return tmp_dir
 
-def run_docling_command(input_path, output_formats, use_ocr=True, output_dir=None):
+def run_docling_command(input_path, output_formats, use_ocr=True):
     """执行docling命令行"""
     input_path = Path(input_path)
     cmd = ["docling", str(input_path)]
@@ -24,14 +25,21 @@ def run_docling_command(input_path, output_formats, use_ocr=True, output_dir=Non
     
     # 存储所有输出文件路径
     output_files = []
+    output_dir = get_default_output_dir()
     
     # 添加输出格式
     for fmt in output_formats:
-        output_dir = output_dir if output_dir else get_default_output_dir()
-        output_path = Path(output_dir) / f"{original_stem}.{fmt}"
+        output_path = output_dir / f"{original_stem}.{fmt}"
         cmd.extend(["--to", fmt])
         cmd.extend(["--output", str(output_path)])
-        output_files.append(output_path)
+        # 如果是目录，找到目录中的实际文件
+        if output_path.is_dir():
+            # 查找目录中的对应格式文件
+            files = list(output_path.glob(f"*.{fmt}"))
+            if files:
+                output_files.extend(files)
+        else:
+            output_files.append(output_path)
     
     # OCR选项
     if not use_ocr:
@@ -45,38 +53,6 @@ def run_docling_command(input_path, output_formats, use_ocr=True, output_dir=Non
             return False, result.stderr, []
     except Exception as e:
         return False, str(e), []
-
-def convert_file(input_file, output_path):
-    try:
-        # 确保输出路径存在
-        output_dir = Path(output_path).parent
-        if not output_dir.exists():
-            try:
-                output_dir.mkdir(parents=True, exist_ok=True)
-            except (PermissionError, OSError):
-                st.error("保存路径无法创建，请检查权限或选择其他位置")
-                return False
-            
-        # 执行文件转换
-        # ... 原有的转换代码 ...
-        
-        return True
-        
-    except FileNotFoundError:
-        st.error("保存路径不存在，请选择有效的保存位置")
-        return False
-    except PermissionError:
-        st.error("没有写入权限，请选择其他保存位置")
-        return False
-    except OSError as e:
-        if "Read-only file system" in str(e):
-            st.error("无法写入该位置，请选择其他保存位置")
-        else:
-            st.error("保存失败，请检查保存路径是否有效")
-        return False
-    except Exception as e:
-        st.error("转换失败，请检查文件格式是否正确")
-        return False
 
 def main():
     st.title("Docling 文档转换工具")
@@ -99,16 +75,6 @@ def main():
     # OCR选项
     use_ocr = st.checkbox("使用OCR", value=True, help="对PDF文件使用光学字符识别")
     
-    # 获取默认输出目录
-    default_output_dir = get_default_output_dir()
-    
-    # 输出目录
-    output_dir = st.text_input(
-        "输出目录",
-        value=default_output_dir,
-        help=f"默认输出目录：{default_output_dir}"
-    )
-    
     if st.button("开始转换"):
         if not uploaded_files:
             st.error("请先上传文件")
@@ -121,6 +87,9 @@ def main():
         # 创建进度条
         progress_bar = st.progress(0)
         status_text = st.empty()
+        
+        # 存储所有生成的文件信息
+        generated_files = []
         
         # 处理每个上传的文件
         for i, uploaded_file in enumerate(uploaded_files):
@@ -137,8 +106,7 @@ def main():
             success, message, output_files = run_docling_command(
                 tmp_path,
                 output_formats,
-                use_ocr,
-                output_dir if output_dir else None
+                use_ocr
             )
             
             # 删除临时文件
@@ -149,15 +117,48 @@ def main():
             
             # 显示结果
             if success:
-                # 合并成功消息和文件路径为一条消息
                 for output_file in output_files:
                     st.success(f"{original_filename} 转换成功，已生成文件：{output_file}")
+                    # 将成功生成的文件添加到列表
+                    generated_files.append(output_file)
             else:
                 st.error(f"{original_filename} 转换失败: {message}")
         
         # 完成处理
         status_text.text("所有文件处理完成")
         progress_bar.progress(1.0)
+        
+        # 显示下载区域
+        if generated_files:
+            st.markdown("### 下载转换后的文件")
+            for file_path in generated_files:
+                try:
+                    # 检查是否为目录
+                    if file_path.is_dir():
+                        # 如果是目录，找到目录中的所有文件
+                        for actual_file in file_path.glob("*.*"):
+                            with open(actual_file, 'rb') as f:
+                                file_content = f.read()
+                                file_name = actual_file.name
+                                st.download_button(
+                                    label=f"下载 {file_name}",
+                                    data=file_content,
+                                    file_name=file_name,
+                                    mime='application/octet-stream'
+                                )
+                    else:
+                        # 如果是文件，直接读取
+                        with open(file_path, 'rb') as f:
+                            file_content = f.read()
+                            file_name = file_path.name
+                            st.download_button(
+                                label=f"下载 {file_name}",
+                                data=file_content,
+                                file_name=file_name,
+                                mime='application/octet-stream'
+                            )
+                except Exception as e:
+                    st.error(f"无法读取文件 {file_path}: {str(e)}")
 
 if __name__ == "__main__":
     import sys
